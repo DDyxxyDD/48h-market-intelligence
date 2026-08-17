@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated local briefings
+data/output/*.html
+!data/output/.gitkeep
