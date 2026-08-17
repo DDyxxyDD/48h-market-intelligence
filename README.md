@@ -12,6 +12,7 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 python main.py             # offline mock data -> data/output/sample_briefing.html
 python main.py --live      # real public data -> data/output/live_briefing.html
+python main.py --live --llm # Phase 2 candidates -> grounded LLM briefing
 pytest
 ```
 
@@ -25,6 +26,8 @@ Live mode also writes `data/output/candidates.json` and prints candidate/selecti
 4. Corporate Strategy Case (an intentional Phase 2 placeholder; it requires historical research)
 
 Configuration in `config/preferences.yaml` controls the UTC lookback (48 hours), topics, score threshold, scope and quotas.
+
+Phase 3 is explicitly opt-in. Set `OPENAI_API_KEY`; optionally set `OPENAI_MODEL` (the configured default is `gpt-5.4-mini`). It uses the official OpenAI Responses API with strict structured outputs, analyzes only LLM-selected events using evidence already collected by Phase 2, and writes `llm_editorial.json`, `llm_analysis.json`, and `llm_briefing.html`. No web-search tool, email, scheduling, or Corporate Strategy research is enabled.
 
 ## Public data sources
 

@@ -50,5 +50,10 @@
       "Situation", "Strategic Problem", "Options", "Decision", "Why", "Execution", "Result",
       "What Worked / Failed", "What I Would Do", "Transferable Lessons"
     ]
+  },
+  "llm": {
+    "max_candidates_per_section": 30,
+    "model": "gpt-5.4-mini",
+    "max_retries": 2
   }
 }
