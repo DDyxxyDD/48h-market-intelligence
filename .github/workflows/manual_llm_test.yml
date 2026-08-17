@@ -1,0 +1,52 @@
+name: Manual Phase 3 LLM Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      openai_model:
+        description: OpenAI model to use for Phase 3 validation
+        required: false
+        default: gpt-5.4-mini
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate-phase-3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run full test suite
+        run: python -m pytest
+
+      - name: Run live Phase 3 LLM pipeline
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.openai_model || 'gpt-5.4-mini' }}
+        run: python main.py --live --llm
+
+      - name: Upload Phase 3 outputs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-briefing-test
+          if-no-files-found: warn
+          path: |
+            data/output/llm_briefing.html
+            data/output/llm_editorial.json
+            data/output/llm_analysis.json
+            data/output/candidates.json
+            data/output/live_briefing.html
