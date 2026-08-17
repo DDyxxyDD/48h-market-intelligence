@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from src.llm_editorial import (DeepDiveAnalysis, EditorialSelection, LLMConfigurationError,
     QuickReadAnalysis, article_id, build_evidence_bundle, compact_candidates, create_client,
-    run_llm_editorial, validate_source_urls)
+    run_llm_editorial, validate_key_numbers, validate_source_urls)
 from src.models import Article
 
 
@@ -14,7 +14,7 @@ def story(section="ai", suffix="1"):
     return Article(f"Material event {suffix}", f"https://example.com/{suffix}", "Reuters",
         datetime.now(timezone.utc), summary="Company launched product with $5 billion investment.",
         section=section, tickers=["TEST"], relevance_score=7,
-        metadata={"event_cluster_id": f"evt_{suffix}", "source_tier": "B",
+        metadata={"article_id": f"evt_{suffix}", "event_cluster_id": f"cluster_{suffix}", "source_tier": "B",
                   "score_breakdown": {"materiality": 2}})
 
 
@@ -66,6 +66,16 @@ def test_evidence_bundle_preserves_related_reports():
         "published_at": item.published_at.isoformat(), "summary": "Same event", "url": "https://ap.example/event"}]
     bundle = build_evidence_bundle(item)
     assert bundle["tickers"] == ["TEST"] and bundle["related_reports"][0]["source"] == "AP"
+    assert "score" not in bundle and "published_at" not in bundle and "score_breakdown" not in bundle
+
+
+def test_key_numbers_reject_internal_metadata_and_keep_source_fact():
+    bundle = build_evidence_bundle(story())
+    valid, removed = validate_key_numbers(
+        ["2026-08-17T14:10:16Z", "relevance score 6.4", "materiality 1.67", "$5 billion"], bundle)
+    assert valid == ["$5 billion"]
+    assert {item["removal_reason"] for item in removed} == {
+        "timestamp_or_date_metadata", "internal_scoring_or_pipeline_metadata"}
 
 
 def test_grounded_url_validation_and_analysis_structures():
@@ -104,3 +114,61 @@ def test_one_section_failure_does_not_abort_pipeline(tmp_path):
     assert "error" in editorial_data["sections"]["macro_rates_fx"]
     assert analysis["sections"]["ai"]["deep_dives"]
     assert (tmp_path / "llm_editorial.json").exists() and (tmp_path / "llm_analysis.json").exists()
+
+
+class CapturingResponses(FakeResponses):
+    def __init__(self, duplicate=False):
+        self.editorial_payloads = []
+        self.duplicate = duplicate
+
+    def parse(self, **kwargs):
+        if kwargs["text_format"] is EditorialSelection:
+            payload = __import__("json").loads(kwargs["input"][1]["content"])
+            self.editorial_payloads.append(payload)
+            candidates = payload["candidates"]
+            if self.duplicate and len(candidates) >= 2:
+                value = EditorialSelection(section=payload["section"], editorial_summary="Events",
+                    deep_dives=[{"article_id": candidates[0]["article_id"], "editorial_score": 9,
+                                 "selection_reason": "Material", "why_not_quick_read": "Depth"}],
+                    quick_reads=[{"article_id": candidates[1]["article_id"], "editorial_score": 7,
+                                  "selection_reason": "Brief"}], rejected_notable_candidates=[])
+                return SimpleNamespace(output_parsed=value)
+        return super().parse(**kwargs)
+
+
+def test_hard_gate_keeps_eligible_healthcare_and_never_sends_ineligible(tmp_path):
+    denied, allowed = story("us_healthcare_equities", "denied"), story("us_healthcare_equities", "allowed")
+    denied.metadata["eligibility_status"] = "ineligible"
+    allowed.metadata["eligibility_status"] = "eligible"
+    responses = CapturingResponses()
+    editorial_data, _ = run_llm_editorial([denied, allowed],
+        {"llm": {"max_retries": 0}}, tmp_path, SimpleNamespace(responses=responses))
+    healthcare = next(p for p in responses.editorial_payloads if p["section"] == "U.S. Healthcare Equities")
+    assert [x["article_id"] for x in healthcare["candidates"]] == ["evt_allowed"]
+    assert editorial_data["healthcare_candidates_before_hard_gate"] == 2
+    assert editorial_data["healthcare_candidates_after_hard_gate"] == 1
+    assert editorial_data["excluded_ineligible_candidates"][0]["article_id"] == "evt_denied"
+
+
+def test_same_event_cannot_be_deep_dive_and_quick_read_or_repeat_in_snapshot_input(tmp_path):
+    first, second = story("ai", "first"), story("ai", "second")
+    second.metadata["event_cluster_id"] = first.metadata["event_cluster_id"]
+    responses = CapturingResponses(duplicate=True)
+    editorial_data, analysis = run_llm_editorial([first, second],
+        {"llm": {"max_retries": 0}}, tmp_path, SimpleNamespace(responses=responses))
+    selected = (editorial_data["sections"]["ai"]["deep_dives"] +
+                editorial_data["sections"]["ai"]["quick_reads"])
+    assert len(selected) == 1
+    removed = editorial_data["duplicate_final_selections_removed"][0]
+    assert removed["article_id"] != removed["kept_article_id"]
+    assert selected[0]["article_id"] == removed["kept_article_id"]
+    assert len(editorial_data["final_event_cluster_ids"]["ai"]) == 1
+    assert len(analysis["sections"]["ai"]["deep_dives"]) == 1
+
+
+def test_professional_style_prompt_does_not_require_audit_prefixes(tmp_path):
+    responses = CapturingResponses()
+    run_llm_editorial([story()], {"llm": {"max_retries": 0}}, tmp_path,
+                      SimpleNamespace(responses=responses))
+    # The returned prose is allowed to be direct; grounding is enforced without audit labels.
+    assert not deep().what_happened.startswith(("Fact:", "Analytical inference:"))
