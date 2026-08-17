@@ -1,0 +1,54 @@
+{
+  "briefing": {
+    "title": "48-Hour Market Intelligence Briefing",
+    "lookback_hours": 48,
+    "relevance_threshold": 5.0
+  },
+  "sections": {
+    "ai": {
+      "name": "AI",
+      "geographic_scope": "global",
+      "deep_dive_count": 2,
+      "quick_read_count": 2,
+      "topics": [
+        "major model and product launches", "AI infrastructure and compute", "semiconductors",
+        "hyperscaler AI capex", "AI M&A and financing", "enterprise AI adoption",
+        "AI monetization and business models", "regulation", "major competitive moves"
+      ]
+    },
+    "macro_rates_fx": {
+      "name": "Macro / Rates / FX",
+      "geographic_scope": "global",
+      "deep_dive_count": 2,
+      "quick_read_count": 2,
+      "topics": [
+        "central banks", "inflation", "employment", "interest rates", "bond markets",
+        "major FX moves", "fiscal policy", "major macroeconomic releases"
+      ]
+    },
+    "us_healthcare_equities": {
+      "name": "U.S. Healthcare Equities",
+      "geographic_scope": "United States publicly listed companies",
+      "deep_dive_count": 2,
+      "quick_read_count": 2,
+      "topics": [
+        "FDA decisions", "clinical trial results", "M&A", "earnings and guidance", "drug pricing",
+        "Medicare and reimbursement", "patents", "major litigation", "material strategic developments"
+      ]
+    },
+    "corporate_strategy_case": {
+      "name": "Corporate Strategy Case",
+      "geographic_scope": "global",
+      "case_count": 1,
+      "topics": ["competitive strategy", "market entry", "capital allocation", "business model transformation"]
+    }
+  },
+  "corporate_strategy": {
+    "alternate_china_non_china": true,
+    "first_case": "china",
+    "structure": [
+      "Situation", "Strategic Problem", "Options", "Decision", "Why", "Execution", "Result",
+      "What Worked / Failed", "What I Would Do", "Transferable Lessons"
+    ]
+  }
+}
