@@ -1,0 +1,17 @@
+{
+  "tiers": {
+    "A": {"score": 3.0, "description": "Original, official or regulatory source"},
+    "B": {"score": 2.5, "description": "Major established financial or general-news organization"},
+    "C": {"score": 1.8, "description": "Credible specialist or trade publication"},
+    "D": {"score": 1.0, "description": "Unknown or generic discovery source"},
+    "blocked": {"score": 0.0, "description": "Blocked or consistently very-low-quality source"}
+  },
+  "publishers": {
+    "A": ["Federal Reserve", "European Central Bank", "Bank of England", "U.S. Food and Drug Administration", "FDA", "SEC", "U.S. Securities and Exchange Commission"],
+    "B": ["Reuters", "Bloomberg", "Financial Times", "The Wall Street Journal", "Wall Street Journal", "Associated Press", "AP News", "CNBC", "BBC", "Nikkei", "The New York Times", "The Washington Post", "The Guardian", "MarketWatch", "Barron's", "Yahoo Finance"],
+    "C": ["STAT", "Endpoints News", "Fierce Biotech", "Fierce Pharma", "BioPharma Dive", "Healthcare Dive", "MedCity News", "PharmaDispatch", "Proactive financial news", "The Banker", "Central Banking", "Semafor", "TechCrunch", "The Verge", "Ars Technica", "PYMNTS", "DigiTimes"],
+    "blocked": ["finance.biggo.com", "jawlah.co", "Stocktwits"]
+  },
+  "official_domains": ["federalreserve.gov", "ecb.europa.eu", "bankofengland.co.uk", "fda.gov", "api.fda.gov", "sec.gov"],
+  "selection": {"max_per_publisher_per_section": 2}
+}

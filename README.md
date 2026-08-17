@@ -28,7 +28,7 @@ Configuration in `config/preferences.yaml` controls the UTC lookback (48 hours),
 
 ## Public data sources
 
-Live mode uses the free public GDELT DOC 2.0 discovery endpoint for broad AI, macro and healthcare coverage. It separately polls curated official feeds from the Federal Reserve, European Central Bank, Bank of England and U.S. FDA. Official releases receive higher source-quality weight. Sources are declarative in `src/collectors/official_sources.py`, making additions straightforward.
+Live mode uses the free public GDELT DOC 2.0 discovery endpoint for broad AI, macro and healthcare coverage, with modest retries for transient HTTP failures. Google News RSS remains the fallback discovery layer. It separately polls official feeds from the Federal Reserve, European Central Bank and Bank of England. FDA coverage uses the functioning official openFDA Drug Enforcement API for recalls and also attempts the public FDA press-announcement listing; either FDA path can fail independently.
 
 The collectors use headlines, canonical links, timestamps and source-provided descriptions. They do not scrape article bodies, bypass paywalls, authentication, CAPTCHAs or robots controls. Every request has a User-Agent, bounded timeout, one modest retry and endpoint-level error isolation.
 
@@ -38,15 +38,15 @@ Each candidate receives a reproducible 0–10 score. Its components appear in `m
 
 * **Interest fit (0–3):** classification and configured-topic evidence.
 * **Materiality (0–3):** section-specific major-event phrases and noise penalties.
-* **Source quality (0–2):** official regulators/central banks outrank generic discovery.
+* **Source quality (0–2):** configuration-driven Tier A official/original, Tier B major news, Tier C specialist/trade, Tier D unknown, and blocked-source rules.
 * **Recency (0–1.5):** declines with age.
 * **Novelty (0–0.5):** a retained unique event.
 
-Zero interest fit forces a zero final score, so prestige cannot make irrelevant news rank highly. Canonical URLs, normalized titles and strong title similarity collapse duplicates while preferring the stronger source. Selection then applies the configured threshold and section quota.
+Source rules and the configurable per-publisher selection cap live in `config/source_quality.json`; Google News is treated only as discovery and its RSS `<source>` publisher is preserved and tiered. Zero interest fit forces a zero final score, so prestige cannot make irrelevant news rank highly. Canonical URLs, normalized titles, event tokens/entities/actions/numbers, and publication-time proximity collapse duplicate events while preferring the stronger source. Representatives retain alternate publishers and URLs. Selection applies the threshold and section quota while normally limiting one publisher to two selected stories per section.
 
 ## Candidate diagnostics
 
-`data/output/candidates.json` records endpoint successes/failures and **every** candidate's title, URL, source, UTC time, section, final score, breakdown, selection flag and rejection reason. Review the `sources` array if counts are low. Typical causes include endpoint rate limiting or URL changes, DNS/network restrictions, malformed feeds, missing timestamps, and no matching news inside the window. An endpoint failure is never reported as success.
+`data/output/candidates.json` records endpoint successes/failures, attempt/retry counts, and **every** candidate's collector, underlying publisher, source tier/score, classification evidence, UTC time, final score/breakdown, cluster/alternate-source data, selection reason and rejection reason. Review the `sources` array if counts are low. Typical causes include endpoint rate limiting or URL changes, DNS/network restrictions, malformed feeds, missing timestamps, and no matching news inside the window. An endpoint failure is never reported as success.
 
 ## Folder structure
 
@@ -55,6 +55,8 @@ config/preferences.yaml     Topics, quotas, lookback and threshold
 data/output/                Generated briefings and diagnostics (ignored)
 src/collectors/             Mock, RSS/Atom, official-feed and GDELT collectors
 src/classification.py       Section keyword evidence
+src/source_quality.py       Config-driven publisher tiers
+src/quality_gates.py        Healthcare noise/materiality gate
 src/deduplication/          URL and event-title duplicate handling
 src/scoring/                Explainable section-aware rules
 src/selection/              Threshold, ranking and quotas
@@ -67,4 +69,4 @@ main.py                     Offline/live entry point and diagnostics
 
 No credentials or secrets are required. Fetched content is untrusted display data: HTML escapes it, XML parsing does not execute it, and the program never obeys embedded instructions. Never add paywall or access-control bypasses.
 
-Public discovery can be noisy or incomplete. Timestamp-less items are skipped; feed descriptions can be absent; keyword classification/scoring can miss nuance; title similarity cannot perfectly identify events; and endpoint availability changes. Phase 2 still has **no LLM/OpenAI analysis, email delivery, or automatic/GitHub Actions scheduling**. Live HTML explicitly says “AI analysis not enabled yet” rather than fabricating analysis.
+Public discovery can be noisy or incomplete. Timestamp-less items are skipped; feed descriptions can be absent; publisher names vary; keyword classification/scoring and deterministic event clustering can miss nuance or merge closely related events; and endpoint availability changes. The healthcare gate removes obvious lifestyle/promotional noise but does not prove U.S. public-equity exposure. Phase 2.1 still has **no LLM/OpenAI analysis, email delivery, or automatic/GitHub Actions scheduling**. Live HTML explicitly says “AI analysis not enabled yet” rather than fabricating analysis.

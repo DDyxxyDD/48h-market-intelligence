@@ -26,7 +26,10 @@ def score_articles(articles: list[Article], sections: dict[str, Any], now: datet
         rules = MATERIALITY.get(article.section, {"major": [], "minor": []})
         major = [term for term in rules["major"] if term in text]
         minor = [term for term in rules["minor"] if term in text]
-        materiality = max(0.0, min(3.0, 0.7 + 1.0 * len(major) - 0.8 * len(minor)))
+        healthcare_major = article.metadata.get("healthcare_materiality_matches", [])
+        healthcare_noise = article.metadata.get("healthcare_noise_matches", [])
+        materiality = max(0.0, min(3.0, 0.7 + 1.0 * len(major) + 0.45 * len(healthcare_major)
+                                    - 0.8 * len(minor) - 1.0 * len(healthcare_noise)))
         source_quality = min(2.0, float(article.metadata.get("source_quality", 1.0)) * 2 / 3)
         age = max(0.0, (now - article.published_at).total_seconds() / 3600)
         recency = max(0.0, 1.5 * (1 - age / 60))
