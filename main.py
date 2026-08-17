@@ -1,14 +1,19 @@
-"""Run the offline sample market-intelligence pipeline."""
+"""Run either the offline sample or fault-tolerant live public-news pipeline."""
 
+import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
 
 from src.briefing import generate_html_briefing
 from src.collectors import collect_sample_articles
-from src.deduplication import deduplicate_articles
+from src.classification import classify_articles
+from src.collectors.live import collect_live_articles
+from src.deduplication import deduplicate_articles, deduplicate_with_rejections
 from src.email import deliver_briefing_locally
 from src.normalization import normalize_articles
+from src.quality_gates import apply_healthcare_gate
 from src.scoring import score_articles
 from src.selection import select_articles
 
@@ -34,6 +39,72 @@ def run_pipeline(output_path: Path = Path("data/output/sample_briefing.html")) -
     return generate_html_briefing(selected, preferences["sections"], output_path)
 
 
+def _diagnostic(article, selected_urls: set[str], reason: str | None = None) -> dict[str, Any]:
+    selected = article.url in selected_urls
+    return {"title": article.title, "url": article.url, "source": article.source,
+            "published_at": article.published_at.isoformat(), "section": article.section,
+            "relevance_score": article.relevance_score,
+            "collector": article.metadata.get("collector"),
+            "underlying_publisher": article.metadata.get("underlying_publisher", article.source),
+            "source_tier": article.metadata.get("source_tier", "D"),
+            "source_quality_score": article.metadata.get("source_quality", 1.0),
+            "classification_matches": article.metadata.get("classification_matches", []),
+            "score_breakdown": article.metadata.get("score_breakdown", {}),
+            "event_cluster_id": article.metadata.get("event_cluster_id"),
+            "duplicate_of": article.metadata.get("duplicate_of"),
+            "alternate_sources": article.metadata.get("alternate_sources", []),
+            "alternate_urls": article.metadata.get("alternate_urls", []),
+            "selection_reason": article.metadata.get("selection_reason"), "selected": selected,
+            **({"rejection_reason": reason or article.metadata.get("rejection_reason") or "below_threshold_or_quota"} if not selected else {})}
+
+
+def run_live_pipeline(output_path: Path = Path("data/output/live_briefing.html"),
+                      diagnostics_path: Path = Path("data/output/candidates.json")) -> tuple[Path, dict[str, Any]]:
+    """Collect, filter, classify, rank and render public news without LLM analysis."""
+    preferences = load_preferences()
+    recent, stale, statuses = collect_live_articles(int(preferences["briefing"]["lookback_hours"]))
+    classify_articles(recent)
+    relevant = [article for article in recent if article.section in preferences["sections"] and
+                article.section != "corporate_strategy_case" and article.metadata.get("source_tier") != "blocked"]
+    unclassified = [article for article in recent if article not in relevant]
+    for article in unclassified:
+        article.metadata["rejection_reason"] = "blocked_source" if article.metadata.get("source_tier") == "blocked" else "unclassified"
+    gated, healthcare_noise = apply_healthcare_gate(relevant)
+    unique, duplicates = deduplicate_with_rejections(gated)
+    score_articles(unique, preferences["sections"])
+    selected = select_articles(unique, preferences["sections"], float(preferences["briefing"]["relevance_threshold"]))
+    # Phase 2 explicitly retains the historical-context placeholder rather than live automation.
+    selected["corporate_strategy_case"] = []
+    selected_urls = {article.url for items in selected.values() for article in items}
+    threshold = float(preferences["briefing"]["relevance_threshold"])
+    for article in unique:
+        if article.url in selected_urls:
+            continue
+        if article.relevance_score < threshold:
+            article.metadata["rejection_reason"] = "below_relevance_threshold"
+            article.metadata.setdefault("selection_reason", "score_below_configured_threshold")
+        else:
+            article.metadata["rejection_reason"] = "section_quota_or_source_diversity"
+            article.metadata.setdefault("selection_reason", "ranked_below_section_quota")
+    candidates = [_diagnostic(article, selected_urls) for article in unique]
+    candidates += [_diagnostic(article, selected_urls) for article in duplicates + healthcare_noise + stale + unclassified]
+    payload = {"generated_at": datetime.now(timezone.utc).isoformat(),
+               "lookback_hours": preferences["briefing"]["lookback_hours"], "sources": statuses,
+               "candidates": candidates}
+    diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    diagnostics_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    result = generate_html_briefing(selected, preferences["sections"], output_path, live=True)
+    for key, settings in preferences["sections"].items():
+        if key == "corporate_strategy_case":
+            continue
+        count = sum(1 for item in candidates if item["section"] == key)
+        print(f'{settings["name"]}: {count} candidates, {len(selected.get(key, []))} selected')
+    return result, payload
+
+
 if __name__ == "__main__":
-    result = run_pipeline()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--live", action="store_true", help="collect real public news from the last configured window")
+    args = parser.parse_args()
+    result = run_live_pipeline()[0] if args.live else run_pipeline()
     print(deliver_briefing_locally(result))

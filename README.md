@@ -1,17 +1,6 @@
 # 48-Hour Market Intelligence Briefing
 
-This repository is the beginner-friendly foundation for an automated market intelligence briefing. The future system will collect recent public business and financial news every 48 hours, rank it, analyze it, build an HTML report, and deliver it by email.
-
-## Current status
-
-This first version is a **local demonstration only**. It uses sample articles bundled in the code, deterministic placeholder analysis, and writes an HTML file to disk. It does **not** fetch live news, call an LLM, send email, or run on a schedule.
-
-The sample covers four sections:
-
-1. AI (global)
-2. Macro / Rates / FX (global)
-3. U.S. Healthcare Equities
-4. Corporate Strategy Case (designed to alternate between China and non-China cases)
+A local, modular market-intelligence pipeline. Phase 2 adds optional real public-news collection while preserving the Phase 1 offline demonstration.
 
 ## Quick start
 
@@ -19,65 +8,65 @@ Python 3.11 or newer is recommended.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate       # Windows: .venv\Scripts\activate
-python -m pip install -r requirements.txt  # installs the test runner
-python main.py
-```
-
-Open `data/output/sample_briefing.html` in a browser after the command finishes.
-
-Run the tests with:
-
-```bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python main.py             # offline mock data -> data/output/sample_briefing.html
+python main.py --live      # real public data -> data/output/live_briefing.html
 pytest
 ```
+
+Live mode also writes `data/output/candidates.json` and prints candidate/selection counts. It continues when an individual source fails.
+
+## Sections
+
+1. AI (global)
+2. Macro / Rates / FX (global)
+3. U.S. Healthcare Equities
+4. Corporate Strategy Case (an intentional Phase 2 placeholder; it requires historical research)
+
+Configuration in `config/preferences.yaml` controls the UTC lookback (48 hours), topics, score threshold, scope and quotas.
+
+## Public data sources
+
+Live mode uses the free public GDELT DOC 2.0 discovery endpoint for broad AI, macro and healthcare coverage, with modest retries for transient HTTP failures. Google News RSS remains the fallback discovery layer. It separately polls official feeds from the Federal Reserve, European Central Bank and Bank of England. FDA coverage uses the functioning official openFDA Drug Enforcement API for recalls and also attempts the public FDA press-announcement listing; either FDA path can fail independently.
+
+The collectors use headlines, canonical links, timestamps and source-provided descriptions. They do not scrape article bodies, bypass paywalls, authentication, CAPTCHAs or robots controls. Every request has a User-Agent, bounded timeout, one modest retry and endpoint-level error isolation.
+
+## Scoring and selection
+
+Each candidate receives a reproducible 0–10 score. Its components appear in `metadata.score_breakdown` and diagnostics:
+
+* **Interest fit (0–3):** classification and configured-topic evidence.
+* **Materiality (0–3):** section-specific major-event phrases and noise penalties.
+* **Source quality (0–2):** configuration-driven Tier A official/original, Tier B major news, Tier C specialist/trade, Tier D unknown, and blocked-source rules.
+* **Recency (0–1.5):** declines with age.
+* **Novelty (0–0.5):** a retained unique event.
+
+Source rules and the configurable per-publisher selection cap live in `config/source_quality.json`; Google News is treated only as discovery and its RSS `<source>` publisher is preserved and tiered. Zero interest fit forces a zero final score, so prestige cannot make irrelevant news rank highly. Canonical URLs, normalized titles, event tokens/entities/actions/numbers, and publication-time proximity collapse duplicate events while preferring the stronger source. Representatives retain alternate publishers and URLs. Selection applies the threshold and section quota while normally limiting one publisher to two selected stories per section.
+
+## Candidate diagnostics
+
+`data/output/candidates.json` records endpoint successes/failures, attempt/retry counts, and **every** candidate's collector, underlying publisher, source tier/score, classification evidence, UTC time, final score/breakdown, cluster/alternate-source data, selection reason and rejection reason. Review the `sources` array if counts are low. Typical causes include endpoint rate limiting or URL changes, DNS/network restrictions, malformed feeds, missing timestamps, and no matching news inside the window. An endpoint failure is never reported as success.
 
 ## Folder structure
 
 ```text
-config/preferences.yaml     Briefing topics, counts, scope, and thresholds
-data/output/                Generated local briefings (ignored by Git)
-src/models.py               Shared Article data model
-src/collectors/             Sample collection now; public feeds later
-src/normalization/          Consistent article cleanup
-src/deduplication/          Duplicate removal
-src/scoring/                Relevance scoring
-src/selection/              Ranking and story selection
-src/analysis/               Placeholder story analysis
-src/briefing/               HTML rendering
-src/email/                  Safe delivery interface (local-only now)
-tests/                      Lightweight unit tests
-main.py                     Pipeline entry point
+config/preferences.yaml     Topics, quotas, lookback and threshold
+data/output/                Generated briefings and diagnostics (ignored)
+src/collectors/             Mock, RSS/Atom, official-feed and GDELT collectors
+src/classification.py       Section keyword evidence
+src/source_quality.py       Config-driven publisher tiers
+src/quality_gates.py        Healthcare noise/materiality gate
+src/deduplication/          URL and event-title duplicate handling
+src/scoring/                Explainable section-aware rules
+src/selection/              Threshold, ranking and quotas
+src/briefing/               Escaped standalone HTML rendering
+tests/                      Offline and mocked collector tests
+main.py                     Offline/live entry point and diagnostics
 ```
 
-Each pipeline stage has a small, separate responsibility so live implementations can replace the mock pieces incrementally.
+## Security and limitations
 
-## Configuration
+No credentials or secrets are required. Fetched content is untrusted display data: HTML escapes it, XML parsing does not execute it, and the program never obeys embedded instructions. Never add paywall or access-control bypasses.
 
-Edit `config/preferences.yaml` to change the 48-hour lookback, section topics, geographic scope, story counts, minimum relevance score, and corporate-case alternation. The file uses JSON syntax, which is valid YAML, so Python can read it without a runtime dependency.
-
-## Mock versus production behavior
-
-| Capability | Current behavior | Future production behavior |
-| --- | --- | --- |
-| Collection | In-code sample articles | Free/public RSS feeds and official releases |
-| Scoring | Simple topic keyword matching | Tuned rules and/or model-assisted scoring |
-| Analysis | Deterministic placeholder text | Source-grounded structured analysis |
-| Briefing | Local HTML file | Polished email-compatible HTML |
-| Email | Disabled; returns a local-only message | Authenticated SMTP or email provider |
-| Scheduling | Manual `python main.py` | GitHub Actions every 48 hours |
-
-No paid news API or paywall-bypassing scraper is included.
-
-## Secrets and security
-
-Copy `.env.example` to `.env` only when a future integration needs credentials. **Never commit `.env`, API keys, email passwords, or other secrets.** GitHub Actions should use encrypted repository secrets. The current sample does not read credentials or make external requests.
-
-## Roadmap
-
-- Add free public RSS feeds and official agency/company sources.
-- Add robust URL/content deduplication and source attribution.
-- Improve relevance scoring, section quotas, and strategy-case alternation state.
-- Add source-grounded Deep Dive and Quick Read analysis.
-- Add email-compatible templates and an explicitly enabled delivery adapter.
-- Add a tested GitHub Actions workflow and observability.
+Public discovery can be noisy or incomplete. Timestamp-less items are skipped; feed descriptions can be absent; publisher names vary; keyword classification/scoring and deterministic event clustering can miss nuance or merge closely related events; and endpoint availability changes. The healthcare gate removes obvious lifestyle/promotional noise but does not prove U.S. public-equity exposure. Phase 2.1 still has **no LLM/OpenAI analysis, email delivery, or automatic/GitHub Actions scheduling**. Live HTML explicitly says “AI analysis not enabled yet” rather than fabricating analysis.
