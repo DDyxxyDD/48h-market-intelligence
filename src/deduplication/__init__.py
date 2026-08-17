@@ -82,6 +82,13 @@ def deduplicate_with_rejections(articles: list[Article]) -> tuple[list[Article],
             cluster_id = duplicate.metadata.setdefault("event_cluster_id", _cluster_id(duplicate))
             duplicate.metadata.setdefault("alternate_sources", []).append(article.source)
             duplicate.metadata.setdefault("alternate_urls", []).append(article.url)
+            # Phase 3 needs the already-collected reports, not merely their URLs. Keeping a
+            # compact copy here does not alter Phase 2's clustering or chosen representative.
+            duplicate.metadata.setdefault("related_reports", []).append({
+                "headline": article.title, "source": article.source,
+                "published_at": article.published_at.isoformat(), "summary": article.summary,
+                "url": article.url,
+            })
             article.metadata["rejection_reason"] = "duplicate_event"
             article.metadata["duplicate_of"] = duplicate.url
             article.metadata["event_cluster_id"] = cluster_id
@@ -92,5 +99,6 @@ def deduplicate_with_rejections(articles: list[Article]) -> tuple[list[Article],
         article.metadata.setdefault("event_cluster_id", _cluster_id(article))
         article.metadata.setdefault("alternate_sources", [])
         article.metadata.setdefault("alternate_urls", [])
+        article.metadata.setdefault("related_reports", [])
         unique.append(article)
     return unique, rejected

@@ -16,6 +16,10 @@ from src.normalization import normalize_articles
 from src.quality_gates import apply_healthcare_gate
 from src.scoring import score_articles
 from src.selection import select_articles
+from src.llm_editorial import LLMConfigurationError, create_client, run_llm_editorial
+from src.briefing.llm_html import generate_llm_briefing
+
+_LAST_LIVE_CANDIDATES = []
 
 
 def load_preferences(path: Path = Path("config/preferences.yaml")) -> dict[str, Any]:
@@ -71,6 +75,8 @@ def run_live_pipeline(output_path: Path = Path("data/output/live_briefing.html")
         article.metadata["rejection_reason"] = "blocked_source" if article.metadata.get("source_tier") == "blocked" else "unclassified"
     gated, healthcare_noise = apply_healthcare_gate(relevant)
     unique, duplicates = deduplicate_with_rejections(gated)
+    global _LAST_LIVE_CANDIDATES
+    _LAST_LIVE_CANDIDATES = unique
     score_articles(unique, preferences["sections"])
     selected = select_articles(unique, preferences["sections"], float(preferences["briefing"]["relevance_threshold"]))
     # Phase 2 explicitly retains the historical-context placeholder rather than live automation.
@@ -102,9 +108,26 @@ def run_live_pipeline(output_path: Path = Path("data/output/live_briefing.html")
     return result, payload
 
 
+def run_llm_pipeline(output_path: Path = Path("data/output/llm_briefing.html")) -> Path:
+    """Run frozen Phase 2 collection, then the opt-in Phase 3 editorial layer."""
+    # Validate configuration before making the user wait for network collection.
+    client = create_client()
+    # This intentionally invokes the same public-news pipeline used by --live.
+    run_live_pipeline()
+    preferences = load_preferences()
+    _, analyses = run_llm_editorial(_LAST_LIVE_CANDIDATES, preferences, Path("data/output"), client)
+    return generate_llm_briefing(analyses, preferences["sections"], output_path)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", help="collect real public news from the last configured window")
+    parser.add_argument("--llm", action="store_true", help="use OpenAI as the final editor (requires --live)")
     args = parser.parse_args()
-    result = run_live_pipeline()[0] if args.live else run_pipeline()
+    if args.llm and not args.live:
+        parser.error("--llm must be used with --live")
+    try:
+        result = run_llm_pipeline() if args.llm else (run_live_pipeline()[0] if args.live else run_pipeline())
+    except LLMConfigurationError as exc:
+        parser.exit(2, f"LLM mode could not start: {exc}\n")
     print(deliver_briefing_locally(result))
