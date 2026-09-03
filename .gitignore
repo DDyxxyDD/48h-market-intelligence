@@ -220,4 +220,5 @@ __marimo__/
 # Generated local briefings
 data/output/*.html
 data/output/candidates.json
+data/output/email_delivery.json
 !data/output/.gitkeep

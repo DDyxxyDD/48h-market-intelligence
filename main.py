@@ -11,7 +11,7 @@ from src.collectors import collect_sample_articles
 from src.classification import classify_articles
 from src.collectors.live import collect_live_articles
 from src.deduplication import deduplicate_articles, deduplicate_with_rejections
-from src.email import deliver_briefing_locally
+from src.email import DEFAULT_BRIEFING, deliver_briefing_locally, send_briefing
 from src.normalization import normalize_articles
 from src.quality_gates import apply_healthcare_gate
 from src.scoring import score_articles
@@ -122,13 +122,21 @@ def run_llm_pipeline(output_path: Path = Path("data/output/llm_briefing.html"),
     return generate_llm_briefing(analyses, preferences["sections"], output_path, strategy)
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", help="collect real public news from the last configured window")
     parser.add_argument("--llm", action="store_true", help="use OpenAI as the final editor (requires --live)")
     parser.add_argument("--strategy-case", action="store_true", help="run only web-grounded strategy research")
     parser.add_argument("--strategy-region", choices=("china", "non_china"), help="override deterministic strategy region")
-    args = parser.parse_args()
+    parser.add_argument("--send-email", action="store_true", help="send the newly generated LLM briefing")
+    parser.add_argument("--email-existing-briefing", action="store_true", help="send the existing LLM briefing without running pipelines")
+    args = parser.parse_args(argv)
+    if args.email_existing_briefing:
+        if args.live or args.llm or args.strategy_case or args.strategy_region or args.send_email:
+            parser.error("--email-existing-briefing cannot be combined with pipeline options")
+        return 0 if send_briefing(DEFAULT_BRIEFING) else 1
+    if args.send_email and (not (args.live and args.llm) or args.strategy_case):
+        parser.error("--send-email requires --live --llm")
     if args.llm and not args.live and not args.strategy_case:
         parser.error("--llm must be used with --live")
     if args.strategy_region and not (args.strategy_case or args.llm):
@@ -145,3 +153,10 @@ if __name__ == "__main__":
     except LLMConfigurationError as exc:
         parser.exit(2, f"LLM mode could not start: {exc}\n")
     print(deliver_briefing_locally(result))
+    if args.send_email:
+        return 0 if send_briefing(result) else 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -13,6 +13,8 @@ python -m pip install -r requirements.txt
 python main.py             # offline mock data -> data/output/sample_briefing.html
 python main.py --live      # real public data -> data/output/live_briefing.html
 python main.py --live --llm # Phase 2 candidates -> grounded LLM briefing
+python main.py --live --llm --send-email # generate and explicitly email that briefing
+python main.py --email-existing-briefing # send the existing briefing without rerunning pipelines
 pytest
 ```
 
@@ -30,6 +32,15 @@ Configuration in `config/preferences.yaml` controls the UTC lookback (48 hours),
 Phase 3 is explicitly opt-in. Set `OPENAI_API_KEY`; optionally set `OPENAI_MODEL` (the configured default is `gpt-5.4-mini`). It uses the official OpenAI Responses API with strict structured outputs and analyzes only LLM-selected events using evidence already collected by Phase 2. Phase 4 independently uses the Responses API built-in `web_search` tool for a bounded Corporate Strategy Case workflow; web search is never used by the Phase 2/3 news pipeline. `python main.py --live --llm` writes `llm_editorial.json`, `llm_analysis.json`, `strategy_case.json`, and the integrated `llm_briefing.html`.
 
 For a lower-cost manual strategy-only run, use `python main.py --strategy-case --strategy-region china` (or `non_china`). Without an override, Python alternates regions deterministically in 48-hour cycles from `corporate_strategy.cycle_anchor`; cycle zero is China. An optional `data/strategy_case_history.json` may contain a JSON list (or `{\"cases\": [...]}`) of objects with `company` and `case_title`; exact prior cases are excluded. The history file is read-only in this phase.
+
+## Email delivery
+
+Email is never sent by ordinary commands. Phase 5 uses standard-library SMTP with STARTTLS and
+reads `SMTP_HOST`, `SMTP_PORT` (default `587`), `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`,
+and comma-separated `EMAIL_TO` exclusively from the environment. `EMAIL_FROM_NAME` is optional.
+For servers with different TLS requirements, `SMTP_USE_STARTTLS` and `SMTP_USE_SSL` can override
+the defaults. Every attempted delivery writes sanitized status to `data/output/email_delivery.json`;
+an SMTP failure never changes or removes the generated briefing and analysis files.
 
 ## Public data sources
 
