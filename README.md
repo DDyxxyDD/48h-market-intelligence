@@ -15,6 +15,7 @@ python main.py --live      # real public data -> data/output/live_briefing.html
 python main.py --live --llm # Phase 2 candidates -> grounded LLM briefing
 python main.py --live --llm --send-email # generate and explicitly email that briefing
 python main.py --email-existing-briefing # send the existing briefing without rerunning pipelines
+python main.py --email-existing-briefing --email-to "a@example.com,b@example.com" # one-run override
 pytest
 ```
 
@@ -37,10 +38,19 @@ For a lower-cost manual strategy-only run, use `python main.py --strategy-case -
 
 Email is never sent by ordinary commands. Phase 5 uses standard-library SMTP with STARTTLS and
 reads `SMTP_HOST`, `SMTP_PORT` (default `587`), `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`,
-and comma-separated `EMAIL_TO` exclusively from the environment. `EMAIL_FROM_NAME` is optional.
+and comma-separated `EMAIL_TO` from the environment. `--email-to` supplies a validated,
+comma-separated recipient override for one run without changing `EMAIL_TO`; whitespace is trimmed
+and exact duplicates are removed. A blank override falls back to `EMAIL_TO`, and delivery fails if
+neither supplies a recipient. `EMAIL_FROM_NAME` is optional.
 For servers with different TLS requirements, `SMTP_USE_STARTTLS` and `SMTP_USE_SSL` can override
 the defaults. Every attempted delivery writes sanitized status to `data/output/email_delivery.json`;
 an SMTP failure never changes or removes the generated briefing and analysis files.
+
+The manual GitHub Actions workflow is a manual-only recipient control panel. Choose
+`generate_and_send` for the existing news → LLM → strategy → HTML → email pipeline, or
+`send_existing_briefing` to send `data/output/llm_briefing.html` without collection or OpenAI calls.
+Its recipient field takes precedence over the saved `EMAIL_TO`. The saved default may be an Actions
+variable (`vars.EMAIL_TO`) or, for backward compatibility, the existing `EMAIL_TO` secret.
 
 ## Public data sources
 

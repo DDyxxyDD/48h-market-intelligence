@@ -130,11 +130,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strategy-region", choices=("china", "non_china"), help="override deterministic strategy region")
     parser.add_argument("--send-email", action="store_true", help="send the newly generated LLM briefing")
     parser.add_argument("--email-existing-briefing", action="store_true", help="send the existing LLM briefing without running pipelines")
+    parser.add_argument("--email-to", help="comma-separated recipients for this run (overrides EMAIL_TO)")
     args = parser.parse_args(argv)
     if args.email_existing_briefing:
         if args.live or args.llm or args.strategy_case or args.strategy_region or args.send_email:
             parser.error("--email-existing-briefing cannot be combined with pipeline options")
-        return 0 if send_briefing(DEFAULT_BRIEFING) else 1
+        sent = (send_briefing(DEFAULT_BRIEFING) if args.email_to is None else
+                send_briefing(DEFAULT_BRIEFING, recipient_override=args.email_to))
+        return 0 if sent else 1
     if args.send_email and (not (args.live and args.llm) or args.strategy_case):
         parser.error("--send-email requires --live --llm")
     if args.llm and not args.live and not args.strategy_case:
@@ -154,7 +157,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.exit(2, f"LLM mode could not start: {exc}\n")
     print(deliver_briefing_locally(result))
     if args.send_email:
-        return 0 if send_briefing(result) else 1
+        sent = (send_briefing(result) if args.email_to is None else
+                send_briefing(result, recipient_override=args.email_to))
+        return 0 if sent else 1
     return 0
 
 

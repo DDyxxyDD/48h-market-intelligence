@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from email.errors import HeaderParseError
 from email.message import EmailMessage
+from email.headerregistry import Address
 from email.utils import formataddr
 import json
 import os
@@ -20,6 +22,32 @@ class EmailConfigurationError(ValueError):
     """Raised when SMTP settings are absent or invalid."""
 
 
+class RecipientValidationError(EmailConfigurationError):
+    """Raised when a recipient override or default contains an invalid address."""
+
+
+def parse_recipients(value: str) -> tuple[str, ...]:
+    """Parse, conservatively validate, and de-duplicate a comma-separated list."""
+    parts = value.split(",")
+    recipients: list[str] = []
+    for raw_address in parts:
+        address = raw_address.strip()
+        if not address:
+            raise RecipientValidationError("Invalid recipient: empty entry")
+        try:
+            parsed = Address(addr_spec=address)
+        except (TypeError, ValueError, HeaderParseError) as exc:
+            raise RecipientValidationError(f"Invalid recipient: {address}") from exc
+        # Address accepts local-only mailboxes; delivery configuration deliberately
+        # requires the more familiar local@domain form and forbids display names.
+        if (parsed.addr_spec != address or not parsed.username or not parsed.domain
+                or any(character.isspace() for character in address)):
+            raise RecipientValidationError(f"Invalid recipient: {address}")
+        if address not in recipients:
+            recipients.append(address)
+    return tuple(recipients)
+
+
 @dataclass(frozen=True)
 class SMTPConfig:
     host: str
@@ -34,9 +62,14 @@ class SMTPConfig:
     timeout: float = 30.0
 
     @classmethod
-    def from_env(cls) -> "SMTPConfig":
-        required = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_FROM", "EMAIL_TO")
+    def from_env(cls, recipient_override: str | None = None) -> "SMTPConfig":
+        """Load SMTP credentials, preferring a non-blank per-run recipient override."""
+        override = recipient_override.strip() if recipient_override is not None else ""
+        required = ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "EMAIL_FROM")
         missing = [name for name in required if not os.environ.get(name, "").strip()]
+        recipient_value = override or os.environ.get("EMAIL_TO", "").strip()
+        if not recipient_value:
+            missing.append("EMAIL_TO (or --email-to override)")
         if missing:
             raise EmailConfigurationError("Missing required email configuration: " + ", ".join(missing))
         try:
@@ -44,9 +77,7 @@ class SMTPConfig:
             timeout = float(os.environ.get("SMTP_TIMEOUT") or "30")
         except ValueError as exc:
             raise EmailConfigurationError("SMTP_PORT and SMTP_TIMEOUT must be numeric") from exc
-        recipients = tuple(address.strip() for address in os.environ["EMAIL_TO"].split(",") if address.strip())
-        if not recipients:
-            raise EmailConfigurationError("EMAIL_TO must contain at least one recipient")
+        recipients = parse_recipients(recipient_value)
         truthy = {"1", "true", "yes", "on"}
         use_ssl = os.environ.get("SMTP_USE_SSL", "false").lower() in truthy
         starttls = os.environ.get("SMTP_USE_STARTTLS", "true").lower() in truthy
@@ -100,7 +131,8 @@ def _write_metadata(path: Path, *, success: bool, recipient_count: int,
 
 
 def send_briefing(briefing_path: Path = DEFAULT_BRIEFING,
-                  metadata_path: Path = DEFAULT_METADATA) -> bool:
+                  metadata_path: Path = DEFAULT_METADATA,
+                  recipient_override: str | None = None) -> bool:
     """Send one existing briefing and always record a sanitized attempt result."""
     config = None
     subject = None
@@ -108,7 +140,7 @@ def send_briefing(briefing_path: Path = DEFAULT_BRIEFING,
         if not briefing_path.is_file() or briefing_path.stat().st_size == 0:
             raise ValueError("Briefing file does not exist or is empty")
         html = briefing_path.read_text(encoding="utf-8")
-        config = SMTPConfig.from_env()
+        config = SMTPConfig.from_env(recipient_override)
         message = build_message(html, config)
         subject = str(message["Subject"])
         smtp_class = smtplib.SMTP_SSL if config.use_ssl else smtplib.SMTP
@@ -124,11 +156,12 @@ def send_briefing(briefing_path: Path = DEFAULT_BRIEFING,
         print(f"Email delivered successfully to {len(config.recipients)} recipient(s).")
         return True
     except Exception as exc:
-        error = _safe_error(exc)
+        error = "Invalid recipient address" if isinstance(exc, RecipientValidationError) else _safe_error(exc)
         _write_metadata(metadata_path, success=False,
                         recipient_count=len(config.recipients) if config else 0,
                         subject=subject, briefing_path=briefing_path, error=error)
-        print(f"Email delivery failed: {error}")
+        console_error = str(exc) if isinstance(exc, RecipientValidationError) else error
+        print(f"Email delivery failed: {console_error}")
         return False
 
 
