@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from src.llm_editorial import (DeepDiveAnalysis, EditorialSelection, LLMConfigurationError,
     QuickReadAnalysis, article_id, build_evidence_bundle, compact_candidates, create_client,
-    run_llm_editorial, validate_key_numbers, validate_source_urls)
+    build_candidate_map, evidence_source_urls, run_llm_editorial, validate_key_numbers)
 from src.models import Article
 
 
@@ -30,7 +30,7 @@ def deep(url="https://example.com/1"):
         key_numbers=["$5 billion"], why_it_matters="Material scale.",
         strategic_read="Inference: investment may affect positioning.",
         market_implication="Inference: competitors may respond.", things_to_watch=["Adoption", "Spending"],
-        evidence_quality="medium", evidence_quality_explanation="One report.", sources=[url])
+        evidence_quality="medium", evidence_quality_explanation="One report.")
 
 
 def test_missing_api_key_is_beginner_friendly(monkeypatch):
@@ -78,14 +78,9 @@ def test_key_numbers_reject_internal_metadata_and_keep_source_fact():
         "timestamp_or_date_metadata", "internal_scoring_or_pipeline_metadata"}
 
 
-def test_grounded_url_validation_and_analysis_structures():
-    item = story()
-    validate_source_urls(deep(), build_evidence_bundle(item))
-    with pytest.raises(ValueError, match="outside evidence"):
-        validate_source_urls(deep("https://invented.example"), build_evidence_bundle(item))
-    quick = QuickReadAnalysis(headline="Launch", what_happened="Launched.",
-        why_it_matters="Material.", one_thing_to_watch="Adoption.", sources=[item.url])
-    validate_source_urls(quick, build_evidence_bundle(item))
+def test_analysis_schema_has_no_model_generated_sources():
+    assert "sources" not in DeepDiveAnalysis.model_fields
+    assert "sources" not in QuickReadAnalysis.model_fields
 
 
 class FakeResponses:
@@ -100,7 +95,7 @@ class FakeResponses:
                 section="empty", editorial_summary="None", deep_dives=[], quick_reads=[], rejected_notable_candidates=[])
         elif schema is DeepDiveAnalysis:
             evidence = __import__("json").loads(section)
-            value = deep(evidence["canonical_url"])
+            value = deep()
         else:
             value = schema(bullets=["A", "B", "C"])
         return SimpleNamespace(output_parsed=value)
@@ -139,15 +134,15 @@ class CapturingResponses(FakeResponses):
 def test_hard_gate_keeps_eligible_healthcare_and_never_sends_ineligible(tmp_path):
     denied, allowed = story("us_healthcare_equities", "denied"), story("us_healthcare_equities", "allowed")
     denied.metadata["eligibility_status"] = "ineligible"
-    allowed.metadata["eligibility_status"] = "eligible"
+    allowed.metadata["us_public_equity_verified"] = True
     responses = CapturingResponses()
     editorial_data, _ = run_llm_editorial([denied, allowed],
         {"llm": {"max_retries": 0}}, tmp_path, SimpleNamespace(responses=responses))
     healthcare = next(p for p in responses.editorial_payloads if p["section"] == "U.S. Healthcare Equities")
-    assert [x["article_id"] for x in healthcare["candidates"]] == ["evt_allowed"]
+    assert [x["article_id"] for x in healthcare["candidates"]] == ["HC_001"]
     assert editorial_data["healthcare_candidates_before_hard_gate"] == 2
     assert editorial_data["healthcare_candidates_after_hard_gate"] == 1
-    assert editorial_data["excluded_ineligible_candidates"][0]["article_id"] == "evt_denied"
+    assert editorial_data["excluded_ineligible_candidates"][0]["reason"] == "rejected_false"
 
 
 def test_same_event_cannot_be_deep_dive_and_quick_read_or_repeat_in_snapshot_input(tmp_path):
@@ -172,3 +167,112 @@ def test_professional_style_prompt_does_not_require_audit_prefixes(tmp_path):
                       SimpleNamespace(responses=responses))
     # The returned prose is allowed to be direct; grounding is enforced without audit labels.
     assert not deep().what_happened.startswith(("Fact:", "Analytical inference:"))
+
+
+def test_short_ids_hide_urls_and_map_to_exact_articles():
+    eyepoint = story("ai", "eyepoint")
+    eyepoint.title = "EyePoint pivotal wet-AMD results"
+    mapping = build_candidate_map([eyepoint], 30)
+    compact = compact_candidates([eyepoint], 30, mapping)
+    assert compact[0]["article_id"] == "AI_001"
+    assert eyepoint.url not in __import__("json").dumps(compact)
+    assert mapping["AI_001"]["article"] is eyepoint
+    assert mapping["AI_001"]["canonical_url"] == eyepoint.url
+
+
+class UnknownResponses(FakeResponses):
+    def parse(self, **kwargs):
+        if kwargs["text_format"] is EditorialSelection:
+            return SimpleNamespace(output_parsed=editorial(article="AI_999"))
+        raise AssertionError("analysis must not run for an unknown short ID")
+
+
+def test_unknown_short_id_cannot_select_or_fall_back_to_random_article(tmp_path):
+    editorial_data, analysis = run_llm_editorial([story()], {"llm": {"max_retries": 0}}, tmp_path,
+        SimpleNamespace(responses=UnknownResponses()))
+    assert "outside the candidate pool" in editorial_data["sections"]["ai"]["error"]
+    assert not analysis["sections"]["ai"]["deep_dives"]
+
+
+class UrlInjectionResponses(FakeResponses):
+    def __init__(self):
+        self.analysis_payload = None
+
+    def parse(self, **kwargs):
+        if kwargs["text_format"] is DeepDiveAnalysis:
+            self.analysis_payload = kwargs["input"][1]["content"]
+            value = deep()
+            # Simulate hostile/legacy model output. Pydantic's schema excludes it,
+            # and Python attaches its own evidence URLs after parsing.
+            object.__setattr__(value, "sources", ["https://model.invalid/changed"])
+            return SimpleNamespace(output_parsed=value)
+        return super().parse(**kwargs)
+
+
+def test_final_urls_are_python_owned_and_model_never_receives_them(tmp_path):
+    item = story()
+    item.metadata["related_reports"] = [{"headline": "Corroboration", "source": "AP",
+        "summary": "Same event", "url": "https://ap.example/exact?x=1&y=2"}]
+    responses = UrlInjectionResponses()
+    _, analysis = run_llm_editorial([item], {"llm": {"max_retries": 0}}, tmp_path,
+        SimpleNamespace(responses=responses))
+    result = analysis["sections"]["ai"]["deep_dives"][0]
+    assert item.url not in responses.analysis_payload
+    assert result["sources"] == [item.url, "https://ap.example/exact?x=1&y=2"]
+    assert "model.invalid" not in __import__("json").dumps(analysis)
+
+
+@pytest.mark.parametrize(("metadata", "allowed", "status"), [
+    ({}, False, "rejected_missing"),
+    ({"us_public_equity_verified": False}, False, "rejected_false"),
+    ({"us_public_equity_verified": True}, True, "verified"),
+])
+def test_healthcare_gate_is_fail_closed(tmp_path, metadata, allowed, status):
+    item = story("us_healthcare_equities", "health")
+    item.metadata.update(metadata)
+    responses = CapturingResponses()
+    editorial_data, _ = run_llm_editorial([item], {"llm": {"max_retries": 0}}, tmp_path,
+        SimpleNamespace(responses=responses))
+    payload = next(p for p in responses.editorial_payloads if p["section"] == "U.S. Healthcare Equities")
+    assert bool(payload["candidates"]) is allowed
+    assert item.metadata["eligibility_gate_status"] == status
+    assert editorial_data["healthcare_candidates_after_hard_gate"] == int(allowed)
+
+
+def test_canada_cpi_and_currency_reaction_collide_but_distinct_event_does_not():
+    from src.llm_editorial import _semantic_collision
+    cpi = story("macro_rates_fx", "cpi")
+    cpi.title = "Canada inflation rises to 3%"
+    cad = story("macro_rates_fx", "cad")
+    cad.title = "Canadian dollar rises as inflation accelerates"
+    other = story("macro_rates_fx", "trade")
+    other.title = "Canada announces new trade agreement with Japan"
+    assert _semantic_collision(cpi, cad)
+    assert _semantic_collision(cpi, other) is None
+
+
+def test_eyepoint_selection_never_maps_to_fda_story():
+    eyepoint, fda = story("ai", "eye"), story("ai", "fda")
+    eyepoint.title = "EyePoint pivotal wet-AMD story"
+    fda.title = "FDA antimicrobial guidance"
+    mapping = build_candidate_map([eyepoint, fda], 30)
+    selected = next(key for key, value in mapping.items() if value["article"] is eyepoint)
+    assert mapping[selected]["article"].title == eyepoint.title
+    assert mapping[selected]["article"] is not fda
+
+
+class FailedAnalysisResponses(FakeResponses):
+    def parse(self, **kwargs):
+        if kwargs["text_format"] is DeepDiveAnalysis:
+            raise RuntimeError("analysis unavailable")
+        return super().parse(**kwargs)
+
+
+def test_analysis_failure_preserves_selection_and_never_looks_up_another(tmp_path):
+    item, other = story("ai", "chosen"), story("ai", "other")
+    item.relevance_score = 9
+    editorial_data, analysis = run_llm_editorial([item, other], {"llm": {"max_retries": 0}}, tmp_path,
+        SimpleNamespace(responses=FailedAnalysisResponses()))
+    assert editorial_data["sections"]["ai"]["deep_dives"][0]["article_id"] == "AI_001"
+    assert analysis["sections"]["ai"]["errors"][0]["selected_title"] == item.title
+    assert not analysis["sections"]["ai"]["deep_dives"]
