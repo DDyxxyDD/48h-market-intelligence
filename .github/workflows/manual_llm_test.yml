@@ -1,4 +1,4 @@
-name: Manual Phase 4 LLM Validation
+name: Manual Phase 5 LLM and Email Validation
 
 on:
   workflow_dispatch:
@@ -8,6 +8,11 @@ on:
         required: false
         default: gpt-5.4-mini
         type: string
+      send_email:
+        description: "Send the generated briefing by email"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,7 +41,13 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ inputs.openai_model || 'gpt-5.4-mini' }}
-        run: python main.py --live --llm
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: python main.py --live --llm ${{ inputs.send_email && '--send-email' || '' }}
 
       - name: Upload Phase 4 outputs
         if: ${{ always() }}
@@ -51,3 +62,4 @@ jobs:
             data/output/candidates.json
             data/output/live_briefing.html
             data/output/strategy_case.json
+            data/output/email_delivery.json
