@@ -27,7 +27,9 @@ def generate_llm_briefing(data: dict[str, Any], sections: dict[str, Any], output
         for item in section.get("quick_reads", []):
             cards.append(f'''<article class="card quick"><div class="tag">Quick Read · Editorial score {item['editorial_score']:.1f}/10</div><h2>{escape(item['headline'])}</h2><p>{escape(item['what_happened'])}</p><p><strong>Why it matters:</strong> {escape(item['why_it_matters'])}</p><p><strong>Watch:</strong> {escape(item['one_thing_to_watch'])}</p><h3>Sources</h3><ul>{_sources(item['sources'])}</ul></article>''')
         if section.get("errors"):
-            cards.append('<p class="notice">Some selected-story analysis failed; details are preserved in llm_analysis.json.</p>')
+            failures = "".join(f"<li>{escape(error.get('selected_title') or error.get('article_id') or error.get('short_id', 'Unknown selection'))}: could not be analyzed</li>"
+                               for error in section["errors"])
+            cards.append(f'<div class="notice"><strong>Selected-story analysis unavailable</strong><ul>{failures}</ul><p>The editorial selection was preserved; no substitute article was used. Details are in llm_analysis.json.</p></div>')
         if not cards:
             cards.append('<p class="notice">No qualifying story was selected, or LLM selection was unavailable for this section.</p>')
         blocks.append(f'<section><h1>{numeral}. {escape(sections[key]["name"])}</h1>{"".join(cards)}</section>')
