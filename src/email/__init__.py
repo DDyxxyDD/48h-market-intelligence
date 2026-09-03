@@ -34,15 +34,21 @@ def parse_recipients(value: str) -> tuple[str, ...]:
         address = raw_address.strip()
         if not address:
             raise RecipientValidationError("Invalid recipient: empty entry")
+        # Reject incomplete addr-specs before handing them to ``Address``.  Some
+        # Python versions raise an internal IndexError for values such as
+        # ``user@``, which would otherwise be mistaken for a delivery failure.
+        if (address.count("@") != 1 or address.startswith("@") or address.endswith("@")
+                or any(character.isspace() for character in address)):
+            raise RecipientValidationError(f"Invalid recipient email address: {address}")
         try:
             parsed = Address(addr_spec=address)
-        except (TypeError, ValueError, HeaderParseError) as exc:
-            raise RecipientValidationError(f"Invalid recipient: {address}") from exc
+        except (TypeError, ValueError, IndexError, HeaderParseError) as exc:
+            raise RecipientValidationError(f"Invalid recipient email address: {address}") from exc
         # Address accepts local-only mailboxes; delivery configuration deliberately
         # requires the more familiar local@domain form and forbids display names.
         if (parsed.addr_spec != address or not parsed.username or not parsed.domain
                 or any(character.isspace() for character in address)):
-            raise RecipientValidationError(f"Invalid recipient: {address}")
+            raise RecipientValidationError(f"Invalid recipient email address: {address}")
         if address not in recipients:
             recipients.append(address)
     return tuple(recipients)
