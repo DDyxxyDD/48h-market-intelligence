@@ -130,6 +130,59 @@ def test_unknown_model_id_cannot_attach_url_or_make_grounded_case_unavailable(tm
     assert all("evil.test" not in source["url"] for source in result["final_attached_sources"])
 
 
+def test_identity_name_and_region_variants_are_diagnostic_only_and_metadata_is_locked(tmp_path):
+    selected = candidate(company="IMAB / I-Mab", title="Asset partnership", score=9)
+    variant = draft(company="I-Mab Biopharma", title="A stylistic model title").model_copy(
+        update={"region": "China", "decision_period": "a model period"})
+    responses = Responses(research_draft=variant)
+    original_parse = responses.parse
+
+    def parse(**kwargs):
+        if kwargs["text_format"] is CandidateDiscovery:
+            return SimpleNamespace(output_parsed=CandidateDiscovery(candidates=[selected]), output=[])
+        return original_parse(**kwargs)
+
+    responses.parse = parse
+    result = run_strategy_case({"llm": {"max_retries": 0}}, tmp_path / "case.json", "china",
+                               SimpleNamespace(responses=responses))
+    assert result["status"] == "available"
+    assert result["identity_normalization_result"] == "normalized_match"
+    assert result["model_returned_company"] == "I-Mab Biopharma"
+    assert result["model_returned_region"] == "China"
+    assert result["final_case"]["company"] == result["locked_company"] == "IMAB / I-Mab"
+    assert result["final_case"]["region"] == result["locked_region"] == "china"
+    assert result["final_case"]["case_title"] == "Asset partnership"
+    assert result["final_case"]["decision_period"] == "2020"
+    assert result["selected_candidate_id"].startswith("strategy_")
+
+
+def test_model_cannot_switch_selected_company(tmp_path):
+    switched = draft(company="Alibaba")
+    result = run_strategy_case({"llm": {"max_retries": 0}}, tmp_path / "case.json", "china",
+                               SimpleNamespace(responses=Responses(research_draft=switched)))
+    assert result["status"] == "unavailable"
+    assert result["identity_normalization_result"] == "true_mismatch"
+    assert "Alibaba" in result["diagnostics"][0]
+
+
+def test_research_evidence_explicitly_about_another_company_fails(tmp_path):
+    responses = Responses()
+    base_evidence = responses.evidence
+
+    def wrong_evidence():
+        evidence = base_evidence()
+        evidence.output_text = "Research evidence about Alibaba."
+        return evidence
+
+    responses.evidence = wrong_evidence
+    result = run_strategy_case({"llm": {"max_retries": 0}}, tmp_path / "case.json", "china",
+                               SimpleNamespace(responses=responses))
+    assert result["status"] == "unavailable"
+    assert result["identity_normalization_result"] == "true_mismatch"
+    assert result["research_source_count"] == 2
+    assert "Alibaba" in result["diagnostics"][0]
+
+
 def test_truly_ungrounded_research_fails_safely_and_retains_registry(tmp_path):
     responses = Responses()
     responses.evidence = lambda: SimpleNamespace(output_text="Only one citation", output=[

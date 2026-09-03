@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -47,12 +49,10 @@ class StrategyOption(BaseModel):
     cons: list[str]
 
 
-class StrategyCaseDraft(BaseModel):
-    region: StrategyRegion
-    company: str
-    case_title: str
+class StrategyCaseSynthesis(BaseModel):
+    """Analytical fields produced by the model; identity is deliberately absent."""
+
     one_line_thesis: str
-    decision_period: str
     situation: str
     strategic_problem: str
     options: list[StrategyOption] = Field(min_length=2)
@@ -67,6 +67,15 @@ class StrategyCaseDraft(BaseModel):
     key_numbers: list[str]
     evidence_quality: Literal["high", "medium", "limited"]
     source_ids: list[str] = Field(min_length=2)
+
+
+class StrategyCaseDraft(StrategyCaseSynthesis):
+    """Legacy combined shape retained for callers; not used as the LLM schema."""
+
+    region: StrategyRegion
+    company: str
+    case_title: str
+    decision_period: str
 
 
 class StrategyCase(StrategyCaseDraft):
@@ -200,6 +209,62 @@ RESEARCH_PROMPT = """Research ONLY the supplied selected corporate strategy case
 SYNTHESIS_PROMPT = """Synthesize only the supplied research evidence into the requested case. Do not browse, add URLs, or rely on discovery source IDs. The allowed research source IDs are explicitly supplied by Python and are local to this evidence bundle. source_ids may contain only those exact IDs. Cite every allowed source that supports the synthesis; Python, not you, owns and attaches final URLs."""
 
 
+def _candidate_id(candidate: StrategyCandidate) -> str:
+    """Return a stable program-owned identifier without asking discovery to invent one."""
+    identity = "\x1f".join((candidate.region, candidate.company, candidate.case_title,
+                              candidate.decision_period))
+    return f"strategy_{hashlib.sha256(identity.encode()).hexdigest()[:16]}"
+
+
+_COMPANY_SUFFIXES = {"biopharma", "biopharmaceuticals", "company", "co", "corp",
+                     "corporation", "inc", "limited", "ltd", "plc", "holdings", "group"}
+
+
+def _company_aliases(company: str) -> set[str]:
+    aliases: set[str] = set()
+    for part in re.split(r"\s*/\s*|\s+or\s+", company.casefold()):
+        words = re.findall(r"[a-z0-9]+", part)
+        if not words:
+            continue
+        aliases.add("".join(words))
+        trimmed = [word for word in words if word not in _COMPANY_SUFFIXES]
+        if trimmed:
+            aliases.add("".join(trimmed))
+    return {alias for alias in aliases if len(alias) >= 3}
+
+
+def _identity_comparison(selected_company: str, model_company: str | None) -> str:
+    if not model_company:
+        return "ignored_locked_field"
+    if selected_company.casefold().strip() == model_company.casefold().strip():
+        return "exact_match"
+    selected_aliases = _company_aliases(selected_company)
+    model_aliases = _company_aliases(model_company)
+    if any(left == right or left in right or right in left
+           for left in selected_aliases for right in model_aliases):
+        return "normalized_match"
+    return "true_mismatch"
+
+
+def _evidence_identity_mismatch(selected: StrategyCandidate, evidence: Any,
+                                sources: list[StrategySource]) -> str | None:
+    """Detect only high-confidence evidence switches, not absence of a name string."""
+    text = " ".join([str(getattr(evidence, "output_text", "")),
+                     *(source.title for source in sources), *(source.domain for source in sources)])
+    compact = "".join(re.findall(r"[a-z0-9]+", text.casefold()))
+    if any(alias in compact for alias in _company_aliases(selected.company)):
+        return None
+    # Research fixtures and provider output can explicitly identify their subject.
+    # Treat that as authoritative only when phrased as an identity assertion.
+    match = re.search(r"(?i)\b(?:research(?:\s+evidence)?\s+about|company|registrant)\s*[:=]?\s*"
+                      r"([A-Z][A-Za-z0-9&.' -]{2,60})", text)
+    if match:
+        asserted = re.split(r"[.;\n]", match.group(1), maxsplit=1)[0].strip()
+        if _identity_comparison(selected.company, asserted) == "true_mismatch":
+            return f"Research evidence identifies {asserted!r}, not locked company {selected.company!r}"
+    return None
+
+
 def _web_parse(client: Any, model: str, schema: type[BaseModel], prompt: str,
                payload: Any, retries: int) -> tuple[BaseModel, list[StrategySource]]:
     """One bounded Responses call with built-in web search and strict output."""
@@ -220,7 +285,7 @@ def _web_parse(client: Any, model: str, schema: type[BaseModel], prompt: str,
 
 
 def _focused_research(client: Any, model: str, selected: StrategyCandidate, region: StrategyRegion,
-                      retries: int) -> tuple[StrategyCaseDraft, list[StrategySource]]:
+                      retries: int) -> tuple[StrategyCaseSynthesis, list[StrategySource]]:
     """Collect web evidence, then synthesize against a Python-owned registry."""
     last: Exception | None = None
     last_sources: list[StrategySource] = []
@@ -238,6 +303,9 @@ def _focused_research(client: Any, model: str, selected: StrategyCandidate, regi
             last_sources = sources
             if len(sources) < 2:
                 raise ValueError("Focused research returned fewer than two grounded web sources")
+            mismatch = _evidence_identity_mismatch(selected, evidence, sources)
+            if mismatch:
+                raise ValueError(f"True selected-candidate identity mismatch: {mismatch}")
             allowed = [source.source_id for source in sources]
             bundle = {
                 "required_region": region,
@@ -249,7 +317,7 @@ def _focused_research(client: Any, model: str, selected: StrategyCandidate, regi
             response = client.responses.parse(model=model,
                 input=[{"role": "system", "content": SYNTHESIS_PROMPT},
                        {"role": "user", "content": json.dumps(bundle, ensure_ascii=False)}],
-                text_format=StrategyCaseDraft)
+                text_format=StrategyCaseSynthesis)
             if response.output_parsed is None:
                 raise ValueError("The model returned no structured synthesis")
             return response.output_parsed, sources
@@ -276,7 +344,11 @@ def run_strategy_case(preferences: dict[str, Any], output_path: Path = Path("dat
         "region": region, "status": "unavailable", "discovery_source_list": [],
         "research_source_list": [], "allowed_research_source_ids": [],
         "model_returned_source_ids": [], "unknown_source_ids": [], "final_attached_sources": [],
-        "discovery_source_count": 0, "research_source_count": 0}
+        "discovery_source_count": 0, "research_source_count": 0,
+        "selected_candidate_id": None, "locked_company": None, "locked_region": region,
+        "locked_case_title": None, "locked_decision_period": None,
+        "model_returned_company": None, "model_returned_region": None,
+        "identity_normalization_result": "ignored_locked_field"}
     client = client or create_client()
     try:
         discovery, discovery_sources = _web_parse(client, model, CandidateDiscovery, DISCOVERY_PROMPT,
@@ -284,6 +356,9 @@ def run_strategy_case(preferences: dict[str, Any], output_path: Path = Path("dat
         selected, rejected, reasoning = select_candidate(discovery.candidates, region, load_history(history_path))
         payload.update(selected_candidate=selected.model_dump(), rejected_candidates=rejected,
                        case_selection_reasoning=reasoning,
+                       selected_candidate_id=_candidate_id(selected), locked_company=selected.company,
+                       locked_region=region, locked_case_title=selected.case_title,
+                       locked_decision_period=selected.decision_period,
                        discovery_source_list=[x.model_dump() for x in discovery_sources],
                        discovery_source_count=len(discovery_sources))
         draft, research_sources = _focused_research(client, model, selected, region, retries)
@@ -294,12 +369,19 @@ def run_strategy_case(preferences: dict[str, Any], output_path: Path = Path("dat
                        research_source_count=len(research_sources),
                        allowed_research_source_ids=allowed_ids,
                        model_returned_source_ids=returned_ids, unknown_source_ids=unknown_ids)
-        if draft.region != region or _case_key(draft.company, draft.case_title) != _case_key(selected.company, selected.case_title):
-            raise ValueError("Research output changed the program-selected case or required region")
+        model_company = getattr(draft, "company", None)
+        model_region = getattr(draft, "region", None)
+        identity_result = _identity_comparison(selected.company, model_company)
+        payload.update(model_returned_company=model_company, model_returned_region=model_region,
+                       identity_normalization_result=identity_result)
+        if identity_result == "true_mismatch":
+            raise ValueError(f"True selected-candidate identity mismatch: model returned company "
+                             f"{model_company!r} for locked company {selected.company!r}")
         # Unknown model IDs are diagnostic only: they can never resolve or attach
         # anything. The complete validated evidence registry is authoritative.
         case_data = draft.model_dump()
-        case_data["source_ids"] = allowed_ids
+        case_data.update(region=region, company=selected.company, case_title=selected.case_title,
+                         decision_period=selected.decision_period, source_ids=allowed_ids)
         case = StrategyCase(**case_data, sources=research_sources)
         payload.update(status="available", final_case=case.model_dump(),
                        source_list=[x.model_dump() for x in research_sources],
@@ -310,6 +392,8 @@ def run_strategy_case(preferences: dict[str, Any], output_path: Path = Path("dat
             payload.update(research_source_list=[x.model_dump() for x in retained_sources],
                            research_source_count=len(retained_sources),
                            allowed_research_source_ids=[x.source_id for x in retained_sources])
+        if "identity mismatch" in str(exc).casefold():
+            payload["identity_normalization_result"] = "true_mismatch"
         payload["diagnostics"] = [str(exc)]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
