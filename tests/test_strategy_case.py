@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from src.briefing.llm_html import generate_llm_briefing
 from src.strategy_case import (CandidateDiscovery, StrategyCandidate, StrategyCase,
-    StrategyCaseDraft, determine_strategy_region, run_strategy_case, select_candidate)
+    StrategyCaseDraft, _extract_sources, determine_strategy_region, run_strategy_case, select_candidate)
 
 
 def candidate(region="china", company="Example", title="Integration", score=8, evidence=True):
@@ -59,17 +59,33 @@ def test_strategy_case_structured_validation_and_exact_sources():
 
 
 class Responses:
-    def __init__(self, fail_research=False): self.calls = 0; self.fail_research = fail_research
+    def __init__(self, fail_research=False, research_draft=None):
+        self.calls = 0; self.fail_research = fail_research
+        self.research_draft = research_draft
+        self.synthesis_input = None
+    @staticmethod
+    def evidence():
+        output = [
+            {"type": "web_search_call", "action": {"sources": [
+                {"type": "url", "url": "https://company.test/report", "title": "Annual report"}]}},
+            {"type": "message", "content": [{"annotations": [
+                {"type": "url_citation", "url": "https://regulator.test/filing", "title": "Regulator"}]}]}]
+        return SimpleNamespace(output_text="Grounded research notes", output=output)
+    def create(self, **kwargs):
+        self.calls += 1
+        if self.fail_research: raise RuntimeError("web unavailable")
+        return self.evidence()
     def parse(self, **kwargs):
         self.calls += 1
         if kwargs["text_format"] is CandidateDiscovery:
             parsed = CandidateDiscovery(candidates=[candidate()])
+            output = [{"content": [{"annotations": [
+                {"type": "url_citation", "url": "https://discovery.test/one", "title": "Discovery one"},
+                {"type": "url_citation", "url": "https://discovery.test/two", "title": "Discovery two"}]}]}]
         else:
-            if self.fail_research: raise RuntimeError("web unavailable")
-            parsed = draft()
-        output = [{"content": [{"annotations": [
-            {"type": "url_citation", "url": "https://company.test/report", "title": "Annual report"},
-            {"type": "url_citation", "url": "https://regulator.test/filing", "title": "Regulator"}]}]}]
+            self.synthesis_input = kwargs["input"]
+            parsed = self.research_draft or draft()
+            output = []
         return SimpleNamespace(output_parsed=parsed, output=output)
 
 
@@ -77,9 +93,54 @@ def test_bounded_research_writes_bundle_and_uses_web_search(tmp_path):
     responses = Responses()
     result = run_strategy_case({"llm": {"model": "test", "max_retries": 0}}, tmp_path / "case.json",
                                "china", SimpleNamespace(responses=responses))
-    assert result["status"] == "available" and responses.calls == 2
+    assert result["status"] == "available" and responses.calls == 3
     assert result["source_list"][0]["url"] == "https://company.test/report"
+    assert result["discovery_source_count"] == result["research_source_count"] == 2
     assert (tmp_path / "case.json").exists()
+
+
+def test_extracts_citations_across_multiple_response_items_and_tool_sources():
+    sources = _extract_sources(Responses.evidence())
+    assert [(source.source_id, source.url) for source in sources] == [
+        ("source_1", "https://company.test/report"),
+        ("source_2", "https://regulator.test/filing")]
+
+
+def test_registries_are_independent_and_synthesis_receives_only_research_ids(tmp_path):
+    responses = Responses()
+    result = run_strategy_case({"llm": {"model": "test", "max_retries": 0}}, tmp_path / "case.json",
+                               "china", SimpleNamespace(responses=responses))
+    assert result["discovery_source_list"][1]["source_id"] == "source_2"
+    assert result["discovery_source_list"][1]["url"] == "https://discovery.test/two"
+    assert result["research_source_list"][1]["source_id"] == "source_2"
+    assert result["research_source_list"][1]["url"] == "https://regulator.test/filing"
+    synthesis_payload = responses.synthesis_input[1]["content"]
+    assert '"allowed_research_source_ids": ["source_1", "source_2"]' in synthesis_payload
+    assert "discovery.test" not in synthesis_payload
+
+
+def test_unknown_model_id_cannot_attach_url_or_make_grounded_case_unavailable(tmp_path):
+    mismatched = draft().model_copy(update={"source_ids": ["source_2", "source_3", "https://evil.test"]})
+    result = run_strategy_case({"llm": {"max_retries": 0}}, tmp_path / "case.json", "china",
+                               SimpleNamespace(responses=Responses(research_draft=mismatched)))
+    assert result["status"] == "available"
+    assert result["unknown_source_ids"] == ["source_3", "https://evil.test"]
+    assert result["final_case"]["source_ids"] == ["source_1", "source_2"]
+    assert result["final_case"]["sources"] == result["research_source_list"]
+    assert all("evil.test" not in source["url"] for source in result["final_attached_sources"])
+
+
+def test_truly_ungrounded_research_fails_safely_and_retains_registry(tmp_path):
+    responses = Responses()
+    responses.evidence = lambda: SimpleNamespace(output_text="Only one citation", output=[
+        {"content": [{"annotations": [{"type": "url_citation", "url": "https://only.test/one"}]}]}])
+    result = run_strategy_case({"llm": {"max_retries": 0}}, tmp_path / "case.json", "china",
+                               SimpleNamespace(responses=responses))
+    assert result["status"] == "unavailable"
+    assert result["research_source_count"] == 1
+    assert result["research_source_list"][0]["url"] == "https://only.test/one"
+    assert result["final_attached_sources"] == []
+    assert "fewer than two grounded" in result["diagnostics"][0]
 
 
 def test_insufficient_research_failure_is_retained_and_html_still_renders(tmp_path):
