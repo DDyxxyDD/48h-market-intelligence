@@ -46,6 +46,8 @@
   "corporate_strategy": {
     "alternate_china_non_china": true,
     "first_case": "china",
+    "cycle_anchor": "2026-01-01T00:00:00+00:00",
+    "cycle_hours": 48,
     "structure": [
       "Situation", "Strategic Problem", "Options", "Decision", "Why", "Execution", "Result",
       "What Worked / Failed", "What I Would Do", "Transferable Lessons"

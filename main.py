@@ -18,6 +18,7 @@ from src.scoring import score_articles
 from src.selection import select_articles
 from src.llm_editorial import LLMConfigurationError, create_client, run_llm_editorial
 from src.briefing.llm_html import generate_llm_briefing
+from src.strategy_case import run_strategy_case
 
 _LAST_LIVE_CANDIDATES = []
 
@@ -108,7 +109,8 @@ def run_live_pipeline(output_path: Path = Path("data/output/live_briefing.html")
     return result, payload
 
 
-def run_llm_pipeline(output_path: Path = Path("data/output/llm_briefing.html")) -> Path:
+def run_llm_pipeline(output_path: Path = Path("data/output/llm_briefing.html"),
+                     strategy_region: str | None = None) -> Path:
     """Run frozen Phase 2 collection, then the opt-in Phase 3 editorial layer."""
     # Validate configuration before making the user wait for network collection.
     client = create_client()
@@ -116,18 +118,30 @@ def run_llm_pipeline(output_path: Path = Path("data/output/llm_briefing.html")) 
     run_live_pipeline()
     preferences = load_preferences()
     _, analyses = run_llm_editorial(_LAST_LIVE_CANDIDATES, preferences, Path("data/output"), client)
-    return generate_llm_briefing(analyses, preferences["sections"], output_path)
+    strategy = run_strategy_case(preferences, region_override=strategy_region, client=client)
+    return generate_llm_briefing(analyses, preferences["sections"], output_path, strategy)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", help="collect real public news from the last configured window")
     parser.add_argument("--llm", action="store_true", help="use OpenAI as the final editor (requires --live)")
+    parser.add_argument("--strategy-case", action="store_true", help="run only web-grounded strategy research")
+    parser.add_argument("--strategy-region", choices=("china", "non_china"), help="override deterministic strategy region")
     args = parser.parse_args()
-    if args.llm and not args.live:
+    if args.llm and not args.live and not args.strategy_case:
         parser.error("--llm must be used with --live")
+    if args.strategy_region and not (args.strategy_case or args.llm):
+        parser.error("--strategy-region requires --strategy-case or --llm")
     try:
-        result = run_llm_pipeline() if args.llm else (run_live_pipeline()[0] if args.live else run_pipeline())
+        if args.strategy_case:
+            client = create_client()
+            preferences = load_preferences()
+            strategy = run_strategy_case(preferences, region_override=args.strategy_region, client=client)
+            result = generate_llm_briefing({"sections": {}, "executive_snapshot": []},
+                                           preferences["sections"], Path("data/output/strategy_briefing.html"), strategy)
+        else:
+            result = run_llm_pipeline(strategy_region=args.strategy_region) if args.llm else (run_live_pipeline()[0] if args.live else run_pipeline())
     except LLMConfigurationError as exc:
         parser.exit(2, f"LLM mode could not start: {exc}\n")
     print(deliver_briefing_locally(result))

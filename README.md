@@ -23,11 +23,13 @@ Live mode also writes `data/output/candidates.json` and prints candidate/selecti
 1. AI (global)
 2. Macro / Rates / FX (global)
 3. U.S. Healthcare Equities
-4. Corporate Strategy Case (an intentional Phase 2 placeholder; it requires historical research)
+4. Corporate Strategy Case (a placeholder in Phase 2-only output; Phase 4 research populates the LLM briefing)
 
 Configuration in `config/preferences.yaml` controls the UTC lookback (48 hours), topics, score threshold, scope and quotas.
 
-Phase 3 is explicitly opt-in. Set `OPENAI_API_KEY`; optionally set `OPENAI_MODEL` (the configured default is `gpt-5.4-mini`). It uses the official OpenAI Responses API with strict structured outputs, analyzes only LLM-selected events using evidence already collected by Phase 2, and writes `llm_editorial.json`, `llm_analysis.json`, and `llm_briefing.html`. No web-search tool, email, scheduling, or Corporate Strategy research is enabled.
+Phase 3 is explicitly opt-in. Set `OPENAI_API_KEY`; optionally set `OPENAI_MODEL` (the configured default is `gpt-5.4-mini`). It uses the official OpenAI Responses API with strict structured outputs and analyzes only LLM-selected events using evidence already collected by Phase 2. Phase 4 independently uses the Responses API built-in `web_search` tool for a bounded Corporate Strategy Case workflow; web search is never used by the Phase 2/3 news pipeline. `python main.py --live --llm` writes `llm_editorial.json`, `llm_analysis.json`, `strategy_case.json`, and the integrated `llm_briefing.html`.
+
+For a lower-cost manual strategy-only run, use `python main.py --strategy-case --strategy-region china` (or `non_china`). Without an override, Python alternates regions deterministically in 48-hour cycles from `corporate_strategy.cycle_anchor`; cycle zero is China. An optional `data/strategy_case_history.json` may contain a JSON list (or `{\"cases\": [...]}`) of objects with `company` and `case_title`; exact prior cases are excluded. The history file is read-only in this phase.
 
 ## Public data sources
 
