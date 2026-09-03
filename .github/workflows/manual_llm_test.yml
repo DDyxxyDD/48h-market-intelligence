@@ -8,11 +8,27 @@ on:
         required: false
         default: gpt-5.4-mini
         type: string
-      send_email:
-        description: "Send the generated briefing by email"
+      recipients:
+        description: "Recipient email(s), comma-separated; blank = saved default"
+        required: false
+        type: string
+      delivery_mode:
+        description: "What should be sent?"
         required: true
-        default: false
-        type: boolean
+        type: choice
+        options:
+          - generate_and_send
+          - send_existing_briefing
+        default: generate_and_send
+      strategy_region:
+        description: "Corporate Strategy region"
+        required: true
+        type: choice
+        options:
+          - auto
+          - china
+          - non_china
+        default: auto
 
 permissions:
   contents: read
@@ -37,7 +53,8 @@ jobs:
       - name: Run full test suite
         run: python -m pytest
 
-      - name: Run live Phase 4 LLM pipeline
+      - name: Generate and send a new briefing
+        if: ${{ inputs.delivery_mode == 'generate_and_send' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ inputs.openai_model || 'gpt-5.4-mini' }}
@@ -46,8 +63,27 @@ jobs:
           SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
-          EMAIL_TO: ${{ secrets.EMAIL_TO }}
-        run: python main.py --live --llm ${{ inputs.send_email && '--send-email' || '' }}
+          EMAIL_TO: ${{ vars.EMAIL_TO || secrets.EMAIL_TO }}
+          RECIPIENTS: ${{ inputs.recipients }}
+          STRATEGY_REGION: ${{ inputs.strategy_region }}
+        run: |
+          args=(--live --llm --send-email --email-to "$RECIPIENTS")
+          if [[ "$STRATEGY_REGION" != "auto" ]]; then
+            args+=(--strategy-region "$STRATEGY_REGION")
+          fi
+          python main.py "${args[@]}"
+
+      - name: Send the existing briefing
+        if: ${{ inputs.delivery_mode == 'send_existing_briefing' }}
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ vars.EMAIL_TO || secrets.EMAIL_TO }}
+          RECIPIENTS: ${{ inputs.recipients }}
+        run: python main.py --email-existing-briefing --email-to "$RECIPIENTS"
 
       - name: Upload Phase 4 outputs
         if: ${{ always() }}
