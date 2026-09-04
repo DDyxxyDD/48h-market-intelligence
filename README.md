@@ -1,98 +1,129 @@
-# 48-Hour Market Intelligence Briefing
+# 48-Hour Market Intelligence
 
-A local, modular market-intelligence pipeline. Phase 2 adds optional real public-news collection while preserving the Phase 1 offline demonstration.
+An AI-powered market-intelligence pipeline that collects, filters, analyzes, and distributes source-grounded business news briefings.
 
-## Quick start
+## What it does
 
-Python 3.11 or newer is recommended.
+The briefing organizes decision-relevant developments into four modules:
+
+1. **AI** — major model and product launches, compute infrastructure, semiconductors, investment, regulation, adoption, and competitive moves.
+2. **Macro / Rates / FX** — central banks, inflation, labor data, rates, bonds, currencies, fiscal policy, and major economic releases.
+3. **U.S. Healthcare Equities** — material developments affecting U.S.-listed healthcare companies, including FDA actions, trials, earnings, M&A, reimbursement, patents, and litigation.
+4. **Corporate Strategy Case** — a structured, web-grounded case covering the situation, strategic problem, options, decision, execution, result, and transferable lessons.
+
+## Why I built it
+
+Financial information is abundant, but decision-useful context is fragmented across feeds, official releases, and publishers. This project turns that fragmented input into a compact briefing while preserving the source links and evidence behind each conclusion.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[News Sources] --> B[Normalize / Deduplicate]
+    B --> C[Score / Eligibility Gates]
+    C --> D[LLM Editorial Selection]
+    D --> E[Grounded Analysis]
+    E --> F[Strategy Research]
+    F --> G[HTML Briefing]
+    G --> H[Gmail Delivery]
+```
+
+Live collection uses public metadata from RSS, GDELT, official central-bank sources, and FDA endpoints. The LLM stage is opt-in: it receives bounded, structured candidate evidence, selects eligible events, and produces analysis tied back to the collected sources. Corporate-strategy research is a separate bounded workflow using OpenAI web search.
+
+## Key engineering decisions
+
+- **Short, program-owned article IDs** keep model references stable without allowing the model to redefine source identity.
+- **Python-owned source registries** map editorial and strategy claims back to known evidence and canonical URLs.
+- **Source URL integrity** is validated before model output is accepted or rendered.
+- **One event, one slot** deduplication clusters overlapping coverage while retaining alternate publishers and links.
+- **Fail-closed U.S. healthcare eligibility** excludes unclear, promotional, lifestyle, and non-material candidates rather than assuming public-equity relevance.
+- **Structured corporate-strategy research** uses a fixed analytical schema, bounded sourcing, identity locking, and region controls.
+- **SMTP delivery** uses STARTTLS by default, with SSL available for providers that require it.
+- **Manual recipient controls** support a validated one-run override without modifying the saved default.
+
+## Example output
+
+Open the [sanitized sample briefing](docs/sample_briefing.html). It is generated from the repository's fictional offline fixtures, uses only `example.com` links, and contains no live account, recipient, or credential data. It demonstrates the HTML structure rather than claiming current news analysis.
+
+## Reliability
+
+The current offline test suite contains **61 passing tests**. It covers normalization and event deduplication, scoring and selection, source and URL integrity, LLM structured-output validation, strategy-case controls, mocked live-source failure handling, SMTP configuration, recipient validation, sanitized delivery diagnostics, and command-line delivery routing. External news endpoints, OpenAI calls, and SMTP delivery are intentionally mocked in tests, so live availability still depends on those services.
+
+Collectors use bounded timeouts, a modest retry, and endpoint-level isolation. A single source failure does not abort collection, and diagnostics record candidate and source outcomes without storing credentials.
+
+## Tech stack
+
+- Python 3.11+
+- OpenAI Responses API
+- GitHub Actions
+- HTML/CSS
+- SMTP / Gmail
+- RSS, GDELT, openFDA, and official central-bank sources
+
+## Current status
+
+- On-demand offline or live briefing generation is available.
+- Opt-in OpenAI editorial analysis and corporate-strategy research are implemented.
+- SMTP email delivery works and requires an explicit send command.
+- A validated `--email-to` recipient override is supported.
+- The GitHub Actions delivery workflow is manual-only (`workflow_dispatch`).
+- Automatic 48-hour scheduling is intentionally **not enabled**.
+
+## Running locally
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-python main.py             # offline mock data -> data/output/sample_briefing.html
-python main.py --live      # real public data -> data/output/live_briefing.html
-python main.py --live --llm # Phase 2 candidates -> grounded LLM briefing
-python main.py --live --llm --send-email # generate and explicitly email that briefing
-python main.py --email-existing-briefing # send the existing briefing without rerunning pipelines
-python main.py --email-existing-briefing --email-to "a@example.com,b@example.com" # one-run override
-pytest
+python -m pytest
+
+# Offline demonstration; no network or credentials required
+python main.py
+
+# Public-source collection
+python main.py --live
+
+# Public-source collection, grounded LLM analysis, and strategy case
+python main.py --live --llm
+
+# Explicitly send the newly generated LLM briefing
+python main.py --live --llm --send-email
 ```
 
-Live mode also writes `data/output/candidates.json` and prints candidate/selection counts. It continues when an individual source fails.
+For a one-run recipient override, append `--email-to "reviewer@example.com"`. To send an existing generated briefing without rerunning collection, use `python main.py --email-existing-briefing`. Email is never sent by the ordinary offline, `--live`, or `--live --llm` commands.
 
-## Sections
+Copy `.env.example` to `.env` for local configuration. Set only the variables needed by the command you run:
 
-1. AI (global)
-2. Macro / Rates / FX (global)
-3. U.S. Healthcare Equities
-4. Corporate Strategy Case (a placeholder in Phase 2-only output; Phase 4 research populates the LLM briefing)
+| Purpose | Environment variables |
+| --- | --- |
+| OpenAI | `OPENAI_API_KEY`, optionally `OPENAI_MODEL` |
+| SMTP account | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` |
+| Sender and recipients | `EMAIL_FROM`, `EMAIL_TO`, optionally `EMAIL_FROM_NAME` |
+| SMTP transport | optionally `SMTP_USE_STARTTLS`, `SMTP_USE_SSL`, `SMTP_TIMEOUT` |
 
-Configuration in `config/preferences.yaml` controls the UTC lookback (48 hours), topics, score threshold, scope and quotas.
+Do not commit `.env`. In GitHub Actions, configure credential values as repository or environment **Secrets**; the saved default recipient may be the `EMAIL_TO` Actions variable or secret.
 
-Phase 3 is explicitly opt-in. Set `OPENAI_API_KEY`; optionally set `OPENAI_MODEL` (the configured default is `gpt-5.4-mini`). It uses the official OpenAI Responses API with strict structured outputs and analyzes only LLM-selected events using evidence already collected by Phase 2. Phase 4 independently uses the Responses API built-in `web_search` tool for a bounded Corporate Strategy Case workflow; web search is never used by the Phase 2/3 news pipeline. `python main.py --live --llm` writes `llm_editorial.json`, `llm_analysis.json`, `strategy_case.json`, and the integrated `llm_briefing.html`.
-
-For a lower-cost manual strategy-only run, use `python main.py --strategy-case --strategy-region china` (or `non_china`). Without an override, Python alternates regions deterministically in 48-hour cycles from `corporate_strategy.cycle_anchor`; cycle zero is China. An optional `data/strategy_case_history.json` may contain a JSON list (or `{\"cases\": [...]}`) of objects with `company` and `case_title`; exact prior cases are excluded. The history file is read-only in this phase.
-
-## Email delivery
-
-Email is never sent by ordinary commands. Phase 5 uses standard-library SMTP with STARTTLS and
-reads `SMTP_HOST`, `SMTP_PORT` (default `587`), `SMTP_USERNAME`, `SMTP_PASSWORD`, `EMAIL_FROM`,
-and comma-separated `EMAIL_TO` from the environment. `--email-to` supplies a validated,
-comma-separated recipient override for one run without changing `EMAIL_TO`; whitespace is trimmed
-and exact duplicates are removed. A blank override falls back to `EMAIL_TO`, and delivery fails if
-neither supplies a recipient. `EMAIL_FROM_NAME` is optional.
-For servers with different TLS requirements, `SMTP_USE_STARTTLS` and `SMTP_USE_SSL` can override
-the defaults. Every attempted delivery writes sanitized status to `data/output/email_delivery.json`;
-an SMTP failure never changes or removes the generated briefing and analysis files.
-
-The manual GitHub Actions workflow is a manual-only recipient control panel. Choose
-`generate_and_send` for the existing news → LLM → strategy → HTML → email pipeline, or
-`send_existing_briefing` to send `data/output/llm_briefing.html` without collection or OpenAI calls.
-Its recipient field takes precedence over the saved `EMAIL_TO`. The saved default may be an Actions
-variable (`vars.EMAIL_TO`) or, for backward compatibility, the existing `EMAIL_TO` secret.
-
-## Public data sources
-
-Live mode uses the free public GDELT DOC 2.0 discovery endpoint for broad AI, macro and healthcare coverage, with modest retries for transient HTTP failures. Google News RSS remains the fallback discovery layer. It separately polls official feeds from the Federal Reserve, European Central Bank and Bank of England. FDA coverage uses the functioning official openFDA Drug Enforcement API for recalls and also attempts the public FDA press-announcement listing; either FDA path can fail independently.
-
-The collectors use headlines, canonical links, timestamps and source-provided descriptions. They do not scrape article bodies, bypass paywalls, authentication, CAPTCHAs or robots controls. Every request has a User-Agent, bounded timeout, one modest retry and endpoint-level error isolation.
-
-## Scoring and selection
-
-Each candidate receives a reproducible 0–10 score. Its components appear in `metadata.score_breakdown` and diagnostics:
-
-* **Interest fit (0–3):** classification and configured-topic evidence.
-* **Materiality (0–3):** section-specific major-event phrases and noise penalties.
-* **Source quality (0–2):** configuration-driven Tier A official/original, Tier B major news, Tier C specialist/trade, Tier D unknown, and blocked-source rules.
-* **Recency (0–1.5):** declines with age.
-* **Novelty (0–0.5):** a retained unique event.
-
-Source rules and the configurable per-publisher selection cap live in `config/source_quality.json`; Google News is treated only as discovery and its RSS `<source>` publisher is preserved and tiered. Zero interest fit forces a zero final score, so prestige cannot make irrelevant news rank highly. Canonical URLs, normalized titles, event tokens/entities/actions/numbers, and publication-time proximity collapse duplicate events while preferring the stronger source. Representatives retain alternate publishers and URLs. Selection applies the threshold and section quota while normally limiting one publisher to two selected stories per section.
-
-## Candidate diagnostics
-
-`data/output/candidates.json` records endpoint successes/failures, attempt/retry counts, and **every** candidate's collector, underlying publisher, source tier/score, classification evidence, UTC time, final score/breakdown, cluster/alternate-source data, selection reason and rejection reason. Review the `sources` array if counts are low. Typical causes include endpoint rate limiting or URL changes, DNS/network restrictions, malformed feeds, missing timestamps, and no matching news inside the window. An endpoint failure is never reported as success.
-
-## Folder structure
+## Repository map
 
 ```text
-config/preferences.yaml     Topics, quotas, lookback and threshold
-data/output/                Generated briefings and diagnostics (ignored)
-src/collectors/             Mock, RSS/Atom, official-feed and GDELT collectors
-src/classification.py       Section keyword evidence
-src/source_quality.py       Config-driven publisher tiers
-src/quality_gates.py        Healthcare noise/materiality gate
-src/deduplication/          URL and event-title duplicate handling
-src/scoring/                Explainable section-aware rules
-src/selection/              Threshold, ranking and quotas
-src/briefing/               Escaped standalone HTML rendering
-tests/                      Offline and mocked collector tests
-main.py                     Offline/live entry point and diagnostics
+.github/workflows/        Manual validation and delivery workflow
+config/                   Briefing preferences and publisher-quality rules
+docs/                     Sanitized public portfolio sample
+src/collectors/           RSS, GDELT, FDA, official-source, and mock collectors
+src/deduplication/        Canonical URL and event-level duplicate handling
+src/briefing/             Standalone escaped HTML rendering
+src/email/                SMTP configuration, validation, and delivery
+src/llm_editorial.py      Structured editorial selection and grounded analysis
+src/strategy_case.py      Structured corporate-strategy research
+main.py                   Command-line entry point and diagnostics
+tests/                    Offline and mocked integration tests
+data/output/              Local generated output; ignored except for `.gitkeep`
 ```
 
-## Security and limitations
+## Security
 
-No credentials or secrets are required. Fetched content is untrusted display data: HTML escapes it, XML parsing does not execute it, and the program never obeys embedded instructions. Never add paywall or access-control bypasses.
+API keys and SMTP credentials are read from environment variables locally and from GitHub Secrets in the manual workflow; they are not repository configuration values. The workflow does not echo credentials, has read-only repository permissions, and passes secrets only to the steps that need them. Delivery diagnostics contain status, recipient count, subject, file path, and a sanitized error category—not addresses or passwords.
 
-Public discovery can be noisy or incomplete. Timestamp-less items are skipped; feed descriptions can be absent; publisher names vary; keyword classification/scoring and deterministic event clustering can miss nuance or merge closely related events; and endpoint availability changes. The healthcare gate removes obvious lifestyle/promotional noise but does not prove U.S. public-equity exposure. Phase 2.1 still has **no LLM/OpenAI analysis, email delivery, or automatic/GitHub Actions scheduling**. Live HTML explicitly says “AI analysis not enabled yet” rather than fabricating analysis.
+Fetched content is treated as untrusted display data: rendering escapes it, XML parsing does not execute it, and source evidence remains separate from instructions. The collectors do not scrape article bodies or bypass paywalls, authentication, CAPTCHAs, or robots controls.
+
+Generated briefings, candidate payloads, model outputs, strategy history, delivery diagnostics, logs, and local environment files are ignored by default. Review any intentionally added portfolio artifact for source licensing, personal data, and credentials before committing it.

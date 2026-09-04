@@ -222,3 +222,24 @@ data/output/*.html
 data/output/candidates.json
 data/output/email_delivery.json
 !data/output/.gitkeep
+
+# Local environment variants and credential files
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Generated pipeline state and diagnostics
+/data/output/*
+!/data/output/.gitkeep
+/data/strategy_case_history.json
+/artifacts/
+/logs/
+
+# Local editor and OS clutter
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
